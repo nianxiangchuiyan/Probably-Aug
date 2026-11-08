@@ -52,6 +52,12 @@ powershell -ExecutionPolicy Bypass -File .\ProbablyAug-Sync.ps1 -Action Setup -P
 | `ProbablyAug-Sync` | 每 5 分钟 + 每次登录，自动 commit → pull --rebase → push |
 | `ProbablyAug-Daemon` | 开机常驻 `git daemon`，把本机 hub 以只读方式暴露给 Tailscale |
 
+两个任务都不是直接起 `powershell.exe`，而是先经过 `%USERPROFILE%\.probably-aug\run-hidden.vbs`
+（用 `wscript.exe` 以隐藏窗口拉起 PowerShell，`SW_HIDE`），所以**不会每 5 分钟弹一个窗口**。
+启动器由 `-Action Setup` 自动生成/重写；机器禁用了 Windows Script Host 时会退回直接启动（会有窗口闪现）。
+
+> 计划任务是逐机注册的：**改了脚本后，每台电脑都要重跑一次 `-Action Setup`**，任务动作才会更新成静默启动。
+
 ### 日常
 
 | 场景 | 操作 |
