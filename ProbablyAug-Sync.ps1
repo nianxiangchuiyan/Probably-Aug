@@ -157,16 +157,30 @@ function Test-RemoteUrl {
     return (Test-Tcp -HostName $u.Host -Port $port -TimeoutMs 3000)
 }
 
+function Get-TailscaleExe {
+    # 有的机器 PATH 里没有 tailscale.exe（不同安装位置/安装方式），这里按常见位置兜底
+    $cmd = Get-Command tailscale.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    foreach ($p in @(
+        (Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Tailscale\tailscale.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Tailscale\tailscale.exe')
+    )) {
+        if ($p -and (Test-Path -LiteralPath $p)) { return $p }
+    }
+    return $null
+}
+
 function Get-TailscaleIp {
     param([string]$Name = '')
-    $ts = Get-Command tailscale.exe -ErrorAction SilentlyContinue
+    $ts = Get-TailscaleExe
     if (-not $ts) { return $null }
     try {
         $tsArgs = @('ip', '-4')
         if ($Name) { $tsArgs += $Name }
         $prev = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
-        $out = & $ts.Source @tsArgs 2>&1
+        $out = & $ts @tsArgs 2>&1
         $code = $LASTEXITCODE
         $ErrorActionPreference = $prev
         if ($code -ne 0) { return $null }
