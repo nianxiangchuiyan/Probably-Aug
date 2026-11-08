@@ -593,20 +593,60 @@ function Invoke-Daemon {
     }
 }
 
+# ---------- 静默启动器 ----------
+# 计划任务是"仅在用户登录时运行"（Interactive），直接起 powershell.exe 会闪一个控制台窗口。
+# 这里生成一个 VBScript 启动器，用 wscript.exe（GUI 程序，本身没有控制台）以 SW_HIDE 拉起
+# PowerShell，任务全程无窗口。
+function Get-SilentLauncher {
+    if ($script:SilentLauncher -and (Test-Path -LiteralPath $script:SilentLauncher)) { return $script:SilentLauncher }
+    $dir = Split-Path -Parent $ConfigPath
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $vbs = Join-Path $dir 'run-hidden.vbs'
+    $body = @'
+' Probably-Aug 静默启动器（Setup 自动生成；重跑 Setup 会重写，别手改）
+' 用法：wscript //B //Nologo run-hidden.vbs "<powershell.exe>" "<脚本路径>" [额外参数...]
+Option Explicit
+Dim sh, cmd, i, q, rc
+If WScript.Arguments.Count < 2 Then WScript.Quit 1
+q = Chr(34)
+cmd = q & WScript.Arguments(0) & q & " -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File " & q & WScript.Arguments(1) & q
+For i = 2 To WScript.Arguments.Count - 1
+    cmd = cmd & " " & WScript.Arguments(i)
+Next
+Set sh = CreateObject("WScript.Shell")
+rc = sh.Run(cmd, 0, True)
+WScript.Quit rc
+'@
+    Set-Content -LiteralPath $vbs -Value $body -Encoding ASCII
+    $script:SilentLauncher = $vbs
+    return $vbs
+}
+
+function New-TaskAction {
+    # 优先用 wscript 静默启动；机器禁用 Windows Script Host 时退回直接起 powershell（会闪窗）
+    param([string]$PsExe, [string]$ActionName)
+    $wscript = Join-Path $env:SystemRoot 'System32\wscript.exe'
+    $launcher = $null
+    try { $launcher = Get-SilentLauncher } catch { }
+    if ($launcher -and (Test-Path -LiteralPath $wscript)) {
+        $argStr = '//B //Nologo "{0}" "{1}" "{2}" -Action {3}' -f $launcher, $PsExe, $ScriptPath, $ActionName
+        return (New-ScheduledTaskAction -Execute $wscript -Argument $argStr -WorkingDirectory $ScriptDir)
+    }
+    $argStr = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Action {1}' -f $ScriptPath, $ActionName
+    return (New-ScheduledTaskAction -Execute $PsExe -Argument $argStr -WorkingDirectory $ScriptDir)
+}
+
 # ---------- 计划任务 ----------
 function Register-Tasks {
     param($Config)
     $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     if (-not (Test-Path -LiteralPath $ps)) { $ps = 'powershell.exe' }
 
-    $syncArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Action Sync' -f $ScriptPath
-    $daemonArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Action Daemon' -f $ScriptPath
-
     $results = @()
 
     # 同步任务
     try {
-        $a = New-ScheduledTaskAction -Execute $ps -Argument $syncArgs -WorkingDirectory $ScriptDir
+        $a = New-TaskAction -PsExe $ps -ActionName 'Sync'
         $t = @(
             (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME)
             (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
@@ -624,7 +664,7 @@ function Register-Tasks {
 
     # Tailscale daemon 任务
     try {
-        $a2 = New-ScheduledTaskAction -Execute $ps -Argument $daemonArgs -WorkingDirectory $ScriptDir
+        $a2 = New-TaskAction -PsExe $ps -ActionName 'Daemon'
         $t2 = @((New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME))
         $s2 = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
             -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) `
@@ -903,10 +943,21 @@ function Invoke-Setup {
     } elseif (Get-TailscaleIp) {
         if (-not (Test-Daemon -Config $cfg)) {
             $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-            Start-Process -FilePath $psExe -ArgumentList @(
-                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-                '-File', ('"{0}"' -f $ScriptPath), '-Action', 'Daemon'
-            ) -WindowStyle Hidden -ErrorAction SilentlyContinue
+            $wscript = Join-Path $env:SystemRoot 'System32\wscript.exe'
+            $launcher = $null
+            try { $launcher = Get-SilentLauncher } catch { }
+            if ($launcher -and (Test-Path -LiteralPath $wscript)) {
+                # 通过静默启动器拉起，不弹窗口
+                Start-Process -FilePath $wscript -WindowStyle Hidden -ErrorAction SilentlyContinue -ArgumentList @(
+                    '//B', '//Nologo', ('"{0}"' -f $launcher), ('"{0}"' -f $psExe), ('"{0}"' -f $ScriptPath), '-Action', 'Daemon'
+                )
+            } else {
+                Start-Process -FilePath $psExe -ArgumentList @(
+                    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+                    '-File', ('"{0}"' -f $ScriptPath), '-Action', 'Daemon'
+                ) -WindowStyle Hidden -ErrorAction SilentlyContinue
+            }
+            Write-Log '已后台启动 daemon' 'OK'
         }
     } else {
         Write-Log 'Tailscale 未登录，跳过 daemon。登录后重跑 -Action Setup 或手动启动' 'WARN'
