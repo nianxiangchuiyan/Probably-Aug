@@ -1,0 +1,11 @@
+# 同步/工具产生的垃圾
+*.log
+.vs/
+.vscode/
+Thumbs.db
+desktop.ini
+~$*
+
+# 网盘冲突副本（万一仓库被放进过网盘）
+*-副本*
+*conflicted copy*
