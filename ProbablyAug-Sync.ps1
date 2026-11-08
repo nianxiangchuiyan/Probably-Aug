@@ -816,7 +816,8 @@ function Invoke-Setup {
     if ($PeerName) { $cfg.PeerName = $PeerName }
     if ($PeerUrl) { $cfg.PeerUrl = $PeerUrl }
     if ($GameName) { $cfg.GameName = $GameName }
-    if ($GameDir) { $cfg.GameDir = ConvertTo-PlainPath $GameDir }
+    $explicitGameDir = -not [string]::IsNullOrWhiteSpace($GameDir)
+    if ($explicitGameDir) { $cfg.GameDir = ConvertTo-PlainPath $GameDir }
     if ($ModFolder) { $cfg.ModFolder = $ModFolder }
     if ($IntervalMinutes -gt 0) { $cfg.IntervalMinutes = $IntervalMinutes }
     if ($cfg.IntervalMinutes -lt 1) { $cfg.IntervalMinutes = 5 }
@@ -826,15 +827,19 @@ function Invoke-Setup {
     $dir = Split-Path -Parent $cfg.LogPath
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 
-    # 游戏目录：没给就自动找
+    # 游戏目录：没给就自动找（显式给了就以用户为准，只提醒）
     if (-not (Test-GameDir -Path $cfg.GameDir)) {
         $name = if ($cfg.GameName) { $cfg.GameName } else { $script:GameName }
-        $found = Find-GameDir -Name $name
-        if ($found) {
-            Write-Log "自动识别游戏目录：$found" 'OK'
-            $cfg.GameDir = $found
+        if ($explicitGameDir) {
+            Write-Log "指定的游戏目录不存在：$($cfg.GameDir)（仍按它写入配置）" 'WARN'
         } else {
-            Write-Log "没有找到游戏目录（游戏名：$name），稍后用 -GameDir 指定" 'WARN'
+            $found = Find-GameDir -Name $name
+            if ($found) {
+                Write-Log "自动识别游戏目录：$found" 'OK'
+                $cfg.GameDir = $found
+            } else {
+                Write-Log "没有找到游戏目录（游戏名：$name），稍后用 -GameDir 指定" 'WARN'
+            }
         }
     }
 
@@ -844,7 +849,7 @@ function Invoke-Setup {
     Write-Host "  仓库路径  : $($cfg.RepoPath)"
     Write-Host "  远端仓库  : $($cfg.RemoteUrl)"
     Write-Host "  游戏目录  : $($cfg.GameDir)"
-    Write-Host "  Mod 目录  : $(Get-ModsDir -Config $cfg)\$($cfg.ModFolder)"
+    Write-Host "  Mod 目录  : $(if (Get-ModsDir -Config $cfg) { Join-Path (Get-ModsDir -Config $cfg) $cfg.ModFolder } else { '未设置' })"
     Write-Host "  Tailscale对端 : $(if ($cfg.PeerName) { $cfg.PeerName } else { '未设置（只用 GitHub）' })"
     Write-Host "  同步间隔  : 每 $($cfg.IntervalMinutes) 分钟"
     Write-Host ''
@@ -956,8 +961,9 @@ function Invoke-Status {
 
     Write-Host "  同步服务  : $(if (Test-Daemon -Config $cfg) { '运行中' } else { '未运行' })"
 
-    $dst = Join-Path (Get-ModsDir -Config $cfg) $cfg.ModFolder
-    if (Test-Path -LiteralPath $dst) {
+    $modsDir = Get-ModsDir -Config $cfg
+    $dst = if ($modsDir -and $cfg.ModFolder) { Join-Path $modsDir $cfg.ModFolder } else { '' }
+    if ($dst -and (Test-Path -LiteralPath $dst)) {
         $item = Get-Item -LiteralPath $dst -Force
         if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
             Write-Host "  游戏链接  : $dst -> $(@($item.Target)[0])" -ForegroundColor Green
@@ -1053,8 +1059,9 @@ function Invoke-Uninstall {
     Stop-Daemon
     Write-Host '  daemon 已停止'
     if ($cfg) {
-        $dst = Join-Path (Get-ModsDir -Config $cfg) $cfg.ModFolder
-        if (Test-Path -LiteralPath $dst) {
+        $modsDir = Get-ModsDir -Config $cfg
+        $dst = if ($modsDir -and $cfg.ModFolder) { Join-Path $modsDir $cfg.ModFolder } else { '' }
+        if ($dst -and (Test-Path -LiteralPath $dst)) {
             $item = Get-Item -LiteralPath $dst -Force
             if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
                 Remove-Link -Path $dst
