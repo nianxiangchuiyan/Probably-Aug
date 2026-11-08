@@ -3,25 +3,41 @@
     Probably-Aug MOD 双设备同步脚本：GitHub 主通道 + Tailscale 回退通道。
 
 .DESCRIPTION
-    同一份脚本在每台电脑上运行，配置保存在 %USERPROFILE%\.probably-aug\config.json。
+    同一份脚本在每台电脑上运行，逐机配置保存在 %USERPROFILE%\.probably-aug\config.json。
+
+    两台电脑的路径可以完全不同，脚本会自动适配：
+      - 仓库位置：默认用脚本自身所在目录（脚本就放在仓库根），不再写死 %USERPROFILE%\Probably-Aug
+      - 游戏目录：优先用配置里的路径；失效时自动扫描 Steam 库
+                  （注册表 SteamPath + steamapps\libraryfolders.vdf + 各盘常见位置）
+      - 配置文件带 ComputerName，发现是从另一台电脑拷来的，会按本机路径自动校正
+      - 所有路径支持带空格 / 中文，建立的是 junction（不需要管理员权限）
 
     -Action Setup      首次配置：克隆仓库 / 建本地 hub / 建游戏目录链接 / 注册计划任务 / 首次同步
     -Action Sync       同步一次（默认动作，计划任务调用这个）
     -Action Status     查看状态：远端连通性、Tailscale、目录链接、最近日志
+    -Action Detect     只探测路径（仓库 / Steam 库 / 游戏目录），不改任何配置
     -Action Daemon     常驻的 Tailscale 同步服务（开机计划任务调用这个）
     -Action Uninstall  删除计划任务和目录链接（仓库保留）
 
 .EXAMPLE
-    # 第一次（两台电脑都这样）
+    # 第一次（两台电脑都这样；游戏目录会自动找）
     powershell -ExecutionPolicy Bypass -File .\ProbablyAug-Sync.ps1 -Action Setup
+
+.EXAMPLE
+    # 自动识别不准时，显式指定本机游戏目录（路径不同就靠这个）
+    powershell -ExecutionPolicy Bypass -File .\ProbablyAug-Sync.ps1 -Action Setup -GameDir "D:\SteamLibrary\steamapps\common\Probably Stolen"
 
 .EXAMPLE
     # 指定 Tailscale 上的另一台机器（主机名或 100.x 地址）
     powershell -ExecutionPolicy Bypass -File .\ProbablyAug-Sync.ps1 -Action Setup -PeerName my-laptop
+
+.EXAMPLE
+    # 只看看脚本认到了哪些路径
+    powershell -ExecutionPolicy Bypass -File .\ProbablyAug-Sync.ps1 -Action Detect
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Setup', 'Sync', 'Status', 'Daemon', 'Uninstall')]
+    [ValidateSet('Setup', 'Sync', 'Status', 'Daemon', 'Detect', 'Uninstall')]
     [string]$Action = 'Sync',
 
     [string]$ConfigPath = '',
@@ -31,6 +47,7 @@ param(
     [string]$PeerUrl = '',
     [string]$GameDir = '',
     [string]$ModFolder = '',
+    [string]$GameName = '',
     [int]$IntervalMinutes = 0,
     [switch]$NoDeploy,
     [switch]$NoTasks,
@@ -47,6 +64,9 @@ $ScriptPath = if ($PSCommandPath) { $PSCommandPath } else { Join-Path $ScriptDir
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $env:USERPROFILE '.probably-aug\config.json'
 }
+
+# 游戏名：用于自动探测 <Steam库>\steamapps\common\<游戏名>，可用 -GameName 覆盖
+$script:GameName = if ($GameName) { $GameName } else { 'Probably Stolen' }
 
 # ---------- 日志 ----------
 $script:LogFile = $null
@@ -142,11 +162,11 @@ function Get-TailscaleIp {
     $ts = Get-Command tailscale.exe -ErrorAction SilentlyContinue
     if (-not $ts) { return $null }
     try {
-        $args = @('ip', '-4')
-        if ($Name) { $args += $Name }
+        $tsArgs = @('ip', '-4')
+        if ($Name) { $tsArgs += $Name }
         $prev = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
-        $out = & $ts.Source @args 2>&1
+        $out = & $ts.Source @tsArgs 2>&1
         $code = $LASTEXITCODE
         $ErrorActionPreference = $prev
         if ($code -ne 0) { return $null }
@@ -156,6 +176,130 @@ function Get-TailscaleIp {
     } catch {
         return $null
     }
+}
+
+# ---------- 路径探测（两台电脑路径不同就靠这一段） ----------
+function ConvertTo-PlainPath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+    $p = $Path.Trim().Trim('"')
+    $p = $p -replace '/', '\'
+    $p = $p -replace '^\\\\\?\?\\', ''      # 去掉 \\?\ 前缀
+    return $p.TrimEnd('\')
+}
+
+function Test-GameDir {
+    # 判断一个目录像不像游戏安装目录：<游戏名>.exe / *_Data 目录 / Mods 目录，任一命中即可
+    param([string]$Path)
+    $p = ConvertTo-PlainPath $Path
+    if (-not $p) { return $false }
+    if (-not (Test-Path -LiteralPath $p)) { return $false }
+    try {
+        if (-not (Get-Item -LiteralPath $p -Force).PSIsContainer) { return $false }
+    } catch { return $false }
+    if ((Split-Path $p -Leaf) -ieq 'Mods') { return $true }
+    foreach ($n in @($script:GameName, 'Probably Stolen')) {
+        if ($n -and (Test-Path -LiteralPath (Join-Path $p "$n.exe"))) { return $true }
+    }
+    try {
+        if (@(Get-ChildItem -LiteralPath $p -Directory -Filter '*_Data' -ErrorAction SilentlyContinue).Count -gt 0) { return $true }
+        if (@(Get-ChildItem -LiteralPath $p -Filter '*.exe' -File -ErrorAction SilentlyContinue).Count -gt 0 -and
+            (Test-Path -LiteralPath (Join-Path $p 'Mods'))) { return $true }
+    } catch { }
+    return $false
+}
+
+function Get-SteamRoots {
+    # Steam 本体目录：注册表 + 常见安装位置 + 各盘
+    $roots = @()
+    foreach ($key in @('HKCU:\Software\Valve\Steam', 'HKLM:\SOFTWARE\WOW6432Node\Valve\Steam', 'HKLM:\SOFTWARE\Valve\Steam')) {
+        try {
+            $v = Get-ItemProperty -Path $key -ErrorAction Stop
+            foreach ($n in @('SteamPath', 'InstallPath')) {
+                $p = ConvertTo-PlainPath $v.$n
+                if ($p) { $roots += $p }
+            }
+        } catch { }
+    }
+    foreach ($p in @(
+        (Join-Path $env:ProgramFiles 'Steam'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Steam'),
+        'C:\Steam', 'D:\Steam', 'E:\Steam',
+        'C:\SteamLibrary', 'D:\SteamLibrary', 'E:\SteamLibrary'
+    )) { if ($p) { $roots += $p } }
+    try {
+        foreach ($d in (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)) {
+            if ($d.Root -notmatch '^[A-Za-z]:\\$') { continue }
+            foreach ($sub in @('SteamLibrary', 'Steam', 'Games\Steam', 'Games\SteamLibrary')) {
+                $roots += (Join-Path $d.Root $sub)
+            }
+        }
+    } catch { }
+    return @($roots | Where-Object { $_ } | Select-Object -Unique)
+}
+
+function Get-SteamLibraries {
+    # 所有 Steam 库根目录（即里面含 steamapps 的那一层）
+    $libs = @()
+    foreach ($root in (Get-SteamRoots)) {
+        $r = ConvertTo-PlainPath $root
+        if (-not $r) { continue }
+        if (Test-Path -LiteralPath (Join-Path $r 'steamapps')) { $libs += $r }
+        $vdf = Join-Path $r 'steamapps\libraryfolders.vdf'
+        if (-not (Test-Path -LiteralPath $vdf)) { continue }
+        try {
+            $text = Get-Content -LiteralPath $vdf -Raw -ErrorAction Stop
+            # 新版："path"  "D:\\SteamLibrary"
+            foreach ($m in [regex]::Matches($text, '"path"\s*"((?:[^"\\]|\\.)*)"')) {
+                $p = ConvertTo-PlainPath ($m.Groups[1].Value -replace '\\\\', '\')
+                if ($p -and (Test-Path -LiteralPath (Join-Path $p 'steamapps'))) { $libs += $p }
+            }
+            # 旧版："1"  "D:\\SteamLibrary"
+            foreach ($m in [regex]::Matches($text, '"\d+"\s*"([A-Za-z]:[^"]*)"')) {
+                $p = ConvertTo-PlainPath ($m.Groups[1].Value -replace '\\\\', '\')
+                if ($p -and (Test-Path -LiteralPath (Join-Path $p 'steamapps'))) { $libs += $p }
+            }
+        } catch { }
+    }
+    return @($libs | Where-Object { $_ } | Select-Object -Unique)
+}
+
+function Get-GameCandidates {
+    param([string]$Name = $script:GameName)
+    if ([string]::IsNullOrWhiteSpace($Name)) { $Name = $script:GameName }
+    $out = @()
+    foreach ($lib in (Get-SteamLibraries)) {
+        $out += (Join-Path $lib "steamapps\common\$Name")
+    }
+    try {
+        foreach ($d in (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)) {
+            if ($d.Root -notmatch '^[A-Za-z]:\\$') { continue }
+            $out += (Join-Path $d.Root "SteamLibrary\steamapps\common\$Name")
+            $out += (Join-Path $d.Root "Steam\steamapps\common\$Name")
+            $out += (Join-Path $d.Root "Games\SteamLibrary\steamapps\common\$Name")
+            $out += (Join-Path $d.Root "Games\$Name")
+            $out += (Join-Path $d.Root $Name)
+        }
+    } catch { }
+    return @($out | Where-Object { $_ } | Select-Object -Unique)
+}
+
+function Find-GameDir {
+    param([string]$Name = $script:GameName)
+    foreach ($c in (Get-GameCandidates -Name $Name)) {
+        if (Test-GameDir -Path $c) {
+            try { return (Resolve-Path -LiteralPath $c).Path } catch { return $c }
+        }
+    }
+    return $null
+}
+
+function Get-ModsDir {
+    param($Config)
+    $g = ConvertTo-PlainPath $Config.GameDir
+    if (-not $g) { return $null }
+    if ((Split-Path $g -Leaf) -ieq 'Mods') { return $g }
+    return (Join-Path $g 'Mods')
 }
 
 # ---------- 配置 ----------
@@ -174,12 +318,20 @@ function Get-DefaultHubPath {
     return (Join-Path $env:USERPROFILE '.probably-aug\hub\probably-aug.git')
 }
 
+function Get-DefaultRepoPath {
+    # 脚本就放在仓库根，所以仓库路径默认跟脚本走，两台电脑可以完全不同
+    if ($ScriptDir -and (Test-Path -LiteralPath (Join-Path $ScriptDir '.git'))) { return $ScriptDir }
+    return (Join-Path $env:USERPROFILE 'Probably-Aug')
+}
+
 function New-DefaultConfig {
     $hubDir = Join-Path $env:USERPROFILE '.probably-aug'
     [pscustomobject]@{
-        RepoPath        = (Join-Path $env:USERPROFILE 'Probably-Aug')
+        ComputerName    = $env:COMPUTERNAME
+        RepoPath        = (Get-DefaultRepoPath)
         RemoteUrl       = 'https://github.com/nianxiangchuiyan/Probably-Aug'
         Branch          = 'main'
+        GameName        = $script:GameName
         GameDir         = 'D:\SteamLibrary\steamapps\common\Probably Stolen'
         ModFolder       = 'Probably-Aug'
         DeploySource    = ''
@@ -216,11 +368,50 @@ function Save-Config {
     $Config | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
 }
 
+function Repair-Config {
+    # 把配置里的路径按当前电脑校正：仓库 / 游戏目录 / 机器名
+    param($Config)
+    $changed = $false
+    $fromOther = ($Config.ComputerName -and ($Config.ComputerName -ne $env:COMPUTERNAME))
+    if ($fromOther) {
+        Write-Log "配置来自另一台电脑（$($Config.ComputerName)），按本机路径校正" 'WARN'
+    }
+
+    # 仓库：配置的路径上没有 .git 时，优先用脚本所在目录（本机克隆位置可能不同）
+    if (-not $Config.RepoPath -or -not (Test-Path -LiteralPath (Join-Path $Config.RepoPath '.git'))) {
+        $fallback = Get-DefaultRepoPath
+        if (Test-Path -LiteralPath (Join-Path $fallback '.git')) {
+            Write-Log "仓库路径不可用（$($Config.RepoPath)），改用：$fallback" 'WARN'
+            $Config.RepoPath = $fallback
+            $changed = $true
+        }
+    }
+
+    # 游戏目录：配置的路径不像游戏目录时，自动扫描
+    if (-not (Test-GameDir -Path $Config.GameDir)) {
+        $name = if ($Config.GameName) { $Config.GameName } else { $script:GameName }
+        $found = Find-GameDir -Name $name
+        if ($found) {
+            Write-Log "游戏目录不可用（$($Config.GameDir)），自动识别为：$found" 'WARN'
+            $Config.GameDir = $found
+            $changed = $true
+        }
+    }
+
+    if ($fromOther) { $Config.ComputerName = $env:COMPUTERNAME; $changed = $true }
+
+    if ($changed) {
+        try { Save-Config -Config $Config } catch { Write-Log "保存配置失败：$($_.Exception.Message)" 'WARN' }
+    }
+    return $Config
+}
+
 function Get-ConfigOrThrow {
     $c = Get-Config
     if (-not $c) { throw "还没有配置。先运行：powershell -ExecutionPolicy Bypass -File `"$ScriptPath`" -Action Setup" }
     $script:LogFile = $c.LogPath
     Limit-Log -Path $c.LogPath
+    $c = Repair-Config -Config $c
     return $c
 }
 
@@ -281,16 +472,23 @@ function Get-LocalHubUrl {
 }
 
 # ---------- 游戏目录链接 ----------
+function Remove-Link {
+    # 只删链接本身，绝不动链接指向的仓库内容
+    param([string]$Path)
+    try { [System.IO.Directory]::Delete($Path, $false) }
+    catch { Remove-Item -LiteralPath $Path -Force -Recurse -ErrorAction SilentlyContinue }
+}
+
 function Ensure-Deploy {
     param($Config, [switch]$Skip)
     if ($Skip) { return 'skipped' }
     if (-not $Config.GameDir -or -not $Config.ModFolder) { return 'disabled' }
-    if (-not (Test-Path -LiteralPath $Config.GameDir)) { return 'no-game-dir' }
+    if (-not (Test-Path -LiteralPath (ConvertTo-PlainPath $Config.GameDir))) { return 'no-game-dir' }
 
     $src = if ($Config.DeploySource) { Join-Path $Config.RepoPath $Config.DeploySource } else { $Config.RepoPath }
     if (-not (Test-Path -LiteralPath $src)) { return 'no-source' }
 
-    $mods = Join-Path $Config.GameDir 'Mods'
+    $mods = Get-ModsDir -Config $Config
     if (-not (Test-Path -LiteralPath $mods)) { New-Item -ItemType Directory -Path $mods -Force | Out-Null }
     $dst = Join-Path $mods $Config.ModFolder
 
@@ -298,12 +496,13 @@ function Ensure-Deploy {
         $item = Get-Item -LiteralPath $dst -Force
         if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
             $target = @($item.Target)[0]
+            $target = if ($target) { $target -replace '^\\\\\?\?\\', '' } else { '' }
             try {
                 if ($target -and ((Resolve-Path -LiteralPath $target).Path -eq (Resolve-Path -LiteralPath $src).Path)) {
                     return 'ok'
                 }
             } catch { }
-            Remove-Item -LiteralPath $dst -Force -Recurse
+            Remove-Link -Path $dst
         } else {
             return 'real-dir'
         }
@@ -560,9 +759,9 @@ function Invoke-Sync {
         $dep = Ensure-Deploy -Config $Config -Skip:$NoDeploy
         switch ($dep) {
             'ok' { }
-            'created' { Write-Log "已建立游戏目录链接：$($Config.ModFolder)" 'OK' }
+            'created' { Write-Log "已建立游戏目录链接：$(Get-ModsDir -Config $Config)\$($Config.ModFolder)" 'OK' }
             'real-dir' { Write-Log "游戏 Mods\$($Config.ModFolder) 是真实目录，未覆盖" 'WARN' }
-            'no-game-dir' { Write-Log "游戏目录不存在：$($Config.GameDir)" 'WARN' }
+            'no-game-dir' { Write-Log "游戏目录不存在：$($Config.GameDir)（可用 -Action Detect 或 -GameDir 指定）" 'WARN' }
         }
         return $rc
     } finally {
@@ -595,28 +794,45 @@ function Write-Conflict {
 function Invoke-Setup {
     $cfg = Get-Config
     if (-not $cfg) { $cfg = New-DefaultConfig }
+    $script:LogFile = $cfg.LogPath
+    $cfg = Repair-Config -Config $cfg
 
-    if ($RepoPath) { $cfg.RepoPath = $RepoPath }
+    if ($RepoPath) { $cfg.RepoPath = ConvertTo-PlainPath $RepoPath }
     if ($RemoteUrl) { $cfg.RemoteUrl = $RemoteUrl }
     if ($PeerName) { $cfg.PeerName = $PeerName }
     if ($PeerUrl) { $cfg.PeerUrl = $PeerUrl }
-    if ($GameDir) { $cfg.GameDir = $GameDir }
+    if ($GameName) { $cfg.GameName = $GameName }
+    if ($GameDir) { $cfg.GameDir = ConvertTo-PlainPath $GameDir }
     if ($ModFolder) { $cfg.ModFolder = $ModFolder }
     if ($IntervalMinutes -gt 0) { $cfg.IntervalMinutes = $IntervalMinutes }
     if ($cfg.IntervalMinutes -lt 1) { $cfg.IntervalMinutes = 5 }
+    $cfg.ComputerName = $env:COMPUTERNAME
 
     $script:LogFile = $cfg.LogPath
     $dir = Split-Path -Parent $cfg.LogPath
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
 
+    # 游戏目录：没给就自动找
+    if (-not (Test-GameDir -Path $cfg.GameDir)) {
+        $name = if ($cfg.GameName) { $cfg.GameName } else { $script:GameName }
+        $found = Find-GameDir -Name $name
+        if ($found) {
+            Write-Log "自动识别游戏目录：$found" 'OK'
+            $cfg.GameDir = $found
+        } else {
+            Write-Log "没有找到游戏目录（游戏名：$name），稍后用 -GameDir 指定" 'WARN'
+        }
+    }
+
     Write-Host ''
     Write-Host '=== Probably-Aug 同步配置 ===' -ForegroundColor Cyan
-    Write-Host "  仓库路径 : $($cfg.RepoPath)"
-    Write-Host "  远端仓库 : $($cfg.RemoteUrl)"
-    Write-Host "  游戏目录 : $($cfg.GameDir)"
-    Write-Host "  Mod 目录 : $($cfg.GameDir)\Mods\$($cfg.ModFolder)"
+    Write-Host "  本机      : $env:COMPUTERNAME"
+    Write-Host "  仓库路径  : $($cfg.RepoPath)"
+    Write-Host "  远端仓库  : $($cfg.RemoteUrl)"
+    Write-Host "  游戏目录  : $($cfg.GameDir)"
+    Write-Host "  Mod 目录  : $(Get-ModsDir -Config $cfg)\$($cfg.ModFolder)"
     Write-Host "  Tailscale对端 : $(if ($cfg.PeerName) { $cfg.PeerName } else { '未设置（只用 GitHub）' })"
-    Write-Host "  同步间隔 : 每 $($cfg.IntervalMinutes) 分钟"
+    Write-Host "  同步间隔  : 每 $($cfg.IntervalMinutes) 分钟"
     Write-Host ''
 
     # 1) 仓库
@@ -684,6 +900,7 @@ function Invoke-Setup {
     Write-Host "  日志：$($cfg.LogPath)"
     Write-Host '  手动同步： .\ProbablyAug-Sync.ps1 -Action Sync'
     Write-Host '  查看状态： .\ProbablyAug-Sync.ps1 -Action Status'
+    Write-Host '  路径探测： .\ProbablyAug-Sync.ps1 -Action Detect'
     return 0
 }
 
@@ -691,11 +908,18 @@ function Invoke-Setup {
 function Invoke-Status {
     $cfg = Get-Config
     if (-not $cfg) { Write-Host '尚未配置，运行 -Action Setup' -ForegroundColor Yellow; return 1 }
+    $cfg = Repair-Config -Config $cfg
 
     Write-Host ''
     Write-Host '=== Probably-Aug 同步状态 ===' -ForegroundColor Cyan
+    Write-Host "  本机      : $env:COMPUTERNAME"
     Write-Host "  仓库      : $($cfg.RepoPath)"
     Write-Host "  GitHub    : $($cfg.RemoteUrl)"
+    Write-Host "  游戏目录  : $($cfg.GameDir)"
+    if (-not (Test-Path -LiteralPath (ConvertTo-PlainPath $cfg.GameDir))) {
+        $found = Find-GameDir -Name $cfg.GameName
+        if ($found) { Write-Host "  自动识别  : $found" -ForegroundColor Yellow }
+    }
 
     $tsIp = Get-TailscaleIp
     if ($tsIp) { Write-Host "  Tailscale : $tsIp" -ForegroundColor Green }
@@ -718,7 +942,7 @@ function Invoke-Status {
 
     Write-Host "  同步服务  : $(if (Test-Daemon -Config $cfg) { '运行中' } else { '未运行' })"
 
-    $dst = Join-Path (Join-Path $cfg.GameDir 'Mods') $cfg.ModFolder
+    $dst = Join-Path (Get-ModsDir -Config $cfg) $cfg.ModFolder
     if (Test-Path -LiteralPath $dst) {
         $item = Get-Item -LiteralPath $dst -Force
         if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
@@ -730,23 +954,79 @@ function Invoke-Status {
         Write-Host "  游戏链接  : 不存在" -ForegroundColor Yellow
     }
 
-    Push-Location -LiteralPath $cfg.RepoPath
-    try {
-        Write-Host "  当前分支  : $((Invoke-Git @('rev-parse','--abbrev-ref','HEAD')).Text.Trim())"
-        Write-Host "  最新提交  : $((Invoke-Git @('log','-1','--format=%h %s')).Text.Trim())"
-        $dirty = (Invoke-Git @('status', '--porcelain')).Text.Trim()
-        Write-Host "  未提交改动: $(if ($dirty) { ($dirty -split "`n").Count } else { 0 })"
-        Write-Host '  远端：'
-        foreach ($r in @('origin', 'hub', 'peer')) {
-            $u = Invoke-Git @('remote', 'get-url', $r)
-            if ($u.Code -eq 0) { Write-Host "    $r = $($u.Text.Trim())" }
-        }
-    } finally { Pop-Location }
+    if (Test-Path -LiteralPath (Join-Path $cfg.RepoPath '.git')) {
+        Push-Location -LiteralPath $cfg.RepoPath
+        try {
+            Write-Host "  当前分支  : $((Invoke-Git @('rev-parse','--abbrev-ref','HEAD')).Text.Trim())"
+            Write-Host "  最新提交  : $((Invoke-Git @('log','-1','--format=%h %s')).Text.Trim())"
+            $dirty = (Invoke-Git @('status', '--porcelain')).Text.Trim()
+            Write-Host "  未提交改动: $(if ($dirty) { ($dirty -split "`n").Count } else { 0 })"
+            Write-Host '  远端：'
+            foreach ($r in @('origin', 'hub', 'peer')) {
+                $u = Invoke-Git @('remote', 'get-url', $r)
+                if ($u.Code -eq 0) { Write-Host "    $r = $($u.Text.Trim())" }
+            }
+        } finally { Pop-Location }
+    } else {
+        Write-Host "  仓库缺失  : $($cfg.RepoPath)" -ForegroundColor Red
+    }
 
     Write-Host ''
     Write-Host '最近日志：'
-    if (Test-Path -LiteralPath $cfg.LogPath) {
+    if ($cfg.LogPath -and (Test-Path -LiteralPath $cfg.LogPath)) {
         Get-Content -LiteralPath $cfg.LogPath -Tail 12 | ForEach-Object { Write-Host "  $_" }
+    }
+    Write-Host ''
+    return 0
+}
+
+# ---------- Detect ----------
+function Invoke-Detect {
+    $cfg = Get-Config
+
+    Write-Host ''
+    Write-Host '=== Probably-Aug 路径探测 ===' -ForegroundColor Cyan
+    Write-Host "  本机    : $env:COMPUTERNAME"
+    Write-Host "  脚本目录: $ScriptDir"
+    Write-Host "  游戏名  : $(if ($cfg -and $cfg.GameName) { $cfg.GameName } else { $script:GameName })"
+    Write-Host ''
+
+    Write-Host 'Steam 库：'
+    $libs = @(Get-SteamLibraries)
+    if ($libs.Count -eq 0) { Write-Host '  （没找到 Steam 库，可能没装 Steam 或装在非常规位置）' -ForegroundColor Yellow }
+    foreach ($l in $libs) { Write-Host "  $l" -ForegroundColor Green }
+
+    Write-Host ''
+    Write-Host '游戏目录候选：'
+    $name = if ($cfg -and $cfg.GameName) { $cfg.GameName } else { $script:GameName }
+    foreach ($c in (Get-GameCandidates -Name $name)) {
+        if (Test-GameDir -Path $c) {
+            Write-Host "  [命中] $c" -ForegroundColor Green
+        } else {
+            Write-Host "  [  -  ] $c" -ForegroundColor DarkGray
+        }
+    }
+
+    $found = Find-GameDir -Name $name
+    Write-Host ''
+    if ($found) {
+        Write-Host "自动识别结果：$found" -ForegroundColor Green
+        if ($cfg) {
+            if ((ConvertTo-PlainPath $cfg.GameDir) -ieq $found) {
+                Write-Host '与配置一致' -ForegroundColor Green
+            } else {
+                Write-Host "配置里是：$($cfg.GameDir)（不一致，跑 -Action Setup 会改正）" -ForegroundColor Yellow
+            }
+        }
+    } else {
+        Write-Host '没有自动识别到游戏目录，用 -GameDir "<本机游戏目录>" 指定' -ForegroundColor Yellow
+    }
+
+    if ($cfg) {
+        Write-Host ''
+        Write-Host "配置仓库：$($cfg.RepoPath)"
+        Write-Host "配置游戏：$($cfg.GameDir)"
+        Write-Host "Mod 目标：$(Get-ModsDir -Config $cfg)\$($cfg.ModFolder)"
     }
     Write-Host ''
     return 0
@@ -759,11 +1039,11 @@ function Invoke-Uninstall {
     Stop-Daemon
     Write-Host '  daemon 已停止'
     if ($cfg) {
-        $dst = Join-Path (Join-Path $cfg.GameDir 'Mods') $cfg.ModFolder
+        $dst = Join-Path (Get-ModsDir -Config $cfg) $cfg.ModFolder
         if (Test-Path -LiteralPath $dst) {
             $item = Get-Item -LiteralPath $dst -Force
             if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-                Remove-Item -LiteralPath $dst -Force -Recurse
+                Remove-Link -Path $dst
                 Write-Host '  游戏目录链接已删除'
             }
         }
@@ -781,6 +1061,7 @@ try {
             $code = Invoke-Sync -Config $cfg -NoDeploy:$NoDeploy
         }
         'Status' { $code = Invoke-Status }
+        'Detect' { $code = Invoke-Detect }
         'Daemon' {
             $cfg = Get-ConfigOrThrow
             Invoke-Daemon -Config $cfg
