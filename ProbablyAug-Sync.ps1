@@ -180,7 +180,7 @@ function New-DefaultConfig {
         RepoPath        = (Join-Path $env:USERPROFILE 'Probably-Aug')
         RemoteUrl       = 'https://github.com/nianxiangchuiyan/Probably-Aug'
         Branch          = 'main'
-        GameDir         = 'C:\Steam\steamapps\common\Probably Stolen'
+        GameDir         = 'D:\SteamLibrary\steamapps\common\Probably Stolen'
         ModFolder       = 'Probably-Aug'
         DeploySource    = ''
         HubPath         = (Get-DefaultHubPath)
