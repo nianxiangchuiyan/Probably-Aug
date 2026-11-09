@@ -11,7 +11,7 @@
 | 项目 | 事实 | 证据 |
 | --- | --- | --- |
 | 安装路径 | `D:\SteamLibrary\steamapps\common\Probably Stolen` | 本机目录 |
-| Steam AppID / BuildID | `4348910` / `26496118` | `steamapps\appmanifest_4348910.acf` |
+| Steam AppID / BuildID | `4348910` / **26525552**（2026-11-09 21:06 更新；本文初稿采样时为 26496118 / 2026-11-07） | `steamapps\appmanifest_4348910.acf`；更新复核见 `version-watch.md` |
 | 最后更新 | 2026-11-07（`LastUpdated`=1794007125，UTC） | 同上 |
 | 引擎/运行时 | **Unity Mono，不是 IL2CPP**：存在 `MonoBleedingEdge\`、`Probably Stolen_Data\Managed\`（161 个 dll），**无 `il2cpp_data`** | 本机目录取证 |
 | Mod 前置 | **不需要 MelonLoader / BepInEx**。游戏自带 `ModLoader` 类与 `0Harmony.dll`(2.4.2)。`Mods\<ModID>\manifest.xml` + DLL，游戏内 Mod 页启用 | 【A】`Assembly-CSharp.dll` 反编译 + `Mods` 目录 |
@@ -35,7 +35,7 @@
 **已做的工作**：
 
 1. 安装目录取证（Mono/IL2CPP、Mods 结构、版本、依赖 dll）。
-2. `Assembly-CSharp.dll` 全量导出：946 个类型、每类型的方法与字段签名 → `docs\research\_asm_dump.txt`（1.15 MB）；可打印字符串 → `_asm_strings.txt`。
+2. `Assembly-CSharp.dll` 全量导出：**949** 个类型（初稿采样 946；build 26525552 复核）、每类型的方法与字段签名 → `docs\research\_asm_dump.txt`；可打印字符串 → `_asm_strings.txt`。
 3. 抓取并核对了 BWIKI 机制页（违禁品与赃物、犯罪值、治安部调查、改造体、派系、夜间结算、房租、机器）与 GitHub `Codesoulme/shenkongdangpuMOD` 的 README/Architecture/manifest。
 4. 未完成：PSApi 与 ItemForge 的成品说明（PSApi 页 403、ItemForge 页正文被截断）；手术工具数值、电费换算率的具体常量未读到 IL 常量值。
 
@@ -211,7 +211,7 @@
 | 其它 | `OnPaperOpened(String,PaperUI)`、`OnNetworkUpgradeUnlocked(String)`、`OnNewGameStarted(String)`、`OnDifficultyApplied(String)` | UI/科技树/开局 |
 | 外出地点 | `OnAfterhourArrive/Leave{Early,Late}(String locationId)`、`OnAfterhourEventStarted/Ended(String,String)` | 夜间地点与事件 |
 
-### 4.3 `ModHelper` 关键 API（143 个方法，摘与本案相关）
+### 4.3 `ModHelper` 关键 API（build 26525552 为 **165** 个方法；初稿 143，摘与本案相关）
 
 `AddCredit(int,bool)`、`SpawnItem(id)`、`MoveItemTo{Inventory,FrontCounter,BackCounter,DisplayCase,Trash,Afterhours}`、`SetItemOwnerShip`、`SetSource`、`SetClientSource`、`GetLocalized`、`PlaySound`、`GetConfig`、`AddGameOption{Toggle,Slider,Dropdown,KeyBind}`、`RegisterLootTable/AddLootEntry/SetLootWeight/RollLootTable`、`AddNetworkUpgrade`、`AddStartingScenario`、`AddStartingPerk`、`AddDifficulty`、`AddAfterhourLocation/AddAfterhourEvent`、`CreatePaper/OpenPaper/RegisterPaperBook`、`SetModData*/GetModData*`、`WriteModDataFileText`、`AddDebugFunction`、`RequestSteamAuthTicket`。
 
@@ -288,7 +288,7 @@
 
 ### 5.3 需要向用户确认的技术假设
 
-1. **版本基线**：本机 build 26496118（2026-11-07）。BWIKI 称"正式版 1.0"，生态文档称"0.46D / ModLoader 100-Rev1"，MCP Bridge 称"100-REV6 / 0.46D"——**三者不一致**。请用户在游戏内 Mod 页/标题界面确认实际版本号，再锁定 manifest 的 `GameVersions`。
+1. **版本基线**：本机已更新至 **BuildID 26525552**（2026-11-09 21:06；初稿采样 26496118 / 2026-11-07）。BWIKI 称"正式版 1.0"，生态文档称"0.46D / ModLoader 100-Rev1"，MCP Bridge 称"100-REV6 / 0.46D"——外部口径仍不一致；以本机 appmanifest 为准，`manifest` 的 `GameVersions` 用范围，不写死 build。复核记录见 `version-watch.md`。
 2. **PSApi 与 ItemForge**：PSApi 已定位到 Nexus `mods/374`（搜索标题可核实），但正文 403；ItemForge（`mods/68`）页面正文被截断。两者与官方 `ModItemDirectory`/`ModLoader` 是否叠加、版本要求如何**均未核实**；若为既定技术路线，需用户提供本地文件或说明文档。
 3. **"手术工具约 200 信用点"**：wiki 机器页未找到对应条目；唯一相近的是 `InitAnimalSurgeryTool`（动物手术工具）。需确认是"人用手术工具"还是记忆偏差。
 4. **改造体声望扩展 Mod 的现状**：本机 `Probably-Aug` 仓库只有同步脚手架（README 声称"增加改造体零号特质和改造体声望系统"，但无 Mod 代码）；3DM/游侠页面存在"改造体数量上下限MOD"标题（未读正文）。**无可核实的功能实现可参考**。
