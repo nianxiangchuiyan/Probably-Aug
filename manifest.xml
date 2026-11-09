@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Mod>
+  <ID>ProbablyAug</ID>
+  <Name>零号改造体（基础框架）</Name>
+  <Author>Probably-Aug</Author>
+  <ModVersion>0.1.0</ModVersion>
+  <Description>零号改造体 Mod 的基础框架原型：身体电量、改造体声望、警觉度、闭店后“改造体行动中”面板。当前只使用游戏官方 ModHook/ModHelper/ModData，不包含 Harmony/反射能力。</Description>
+  <GameVersions />
+  <Prerequisites />
+  <Assemblies>
+    <Assembly>ProbablyAug.dll</Assembly>
+  </Assemblies>
+  <Capabilities />
+</Mod>

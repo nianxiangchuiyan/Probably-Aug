@@ -9,3 +9,10 @@ desktop.ini
 # 网盘冲突副本（万一仓库被放进过网盘）
 *-副本*
 *conflicted copy*
+
+# Mod build outputs
+src/bin/
+src/obj/
+build.rsp
+ProbablyAug.deps.json
+
