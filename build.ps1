@@ -46,11 +46,22 @@ if (-not (Test-Path $csproj)) {
     throw "csproj not found: $csproj"
 }
 
+# Build outside the mod folder so the game loader never sees duplicate DLLs.
+$buildRoot = Join-Path $env:TEMP 'ProbablyAugBuild'
+$objDir = Join-Path $buildRoot 'obj\'
+$binDir = Join-Path $buildRoot 'bin\'
+$outDir = Join-Path $buildRoot 'out\'
+
 Write-Host "GameDir: $GameDir"
 Write-Host "Project : $csproj"
-& $dotnet.Source build $csproj -c Release --nologo -v:minimal "-p:GameDir=$GameDir"
+& $dotnet.Source build $csproj -c Release --nologo -v:minimal `
+    "-p:GameDir=$GameDir" `
+    "-p:BaseIntermediateOutputPath=$objDir" `
+    "-p:BaseOutputPath=$binDir" `
+    "-p:OutputPath=$outDir"
 if ($LASTEXITCODE -ne 0) { throw "Compile failed: exit $LASTEXITCODE" }
 
-$dll = Join-Path $PSScriptRoot 'ProbablyAug.dll'
-if (-not (Test-Path $dll)) { throw "DLL not found: $dll" }
-Write-Host "Build OK: $dll"
+$built = Join-Path $outDir 'ProbablyAug.dll'
+if (-not (Test-Path $built)) { throw "DLL not found: $built" }
+Copy-Item -LiteralPath $built -Destination (Join-Path $PSScriptRoot 'ProbablyAug.dll') -Force
+Write-Host "Build OK: $(Join-Path $PSScriptRoot 'ProbablyAug.dll')"

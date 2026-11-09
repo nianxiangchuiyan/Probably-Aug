@@ -4,6 +4,19 @@
 
 ---
 
+## 基础 Mod 代码（v0.1.0）
+
+- 清单：`manifest.xml`；代码：`src/`；构建：`build.ps1`；产物：`ProbablyAug.dll`。
+- 当前功能：`IMod` 加载、`ModData` 状态存档、每夜电量消耗、闭店后“改造体行动中”原型面板（竖排绿/黄/红进度条）。
+- 技术约束：**只用官方 `ModHook`/`ModHelper`/`ModData`，不使用 Harmony/反射**，`Capabilities` 为空。
+- 说明与测试：`docs/07-基础Mod框架.md`；设计与用例：`docs/`。
+- 构建：
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File .\build.ps1
+  ```
+
+---
+
 ## 多设备开发同步
 
 仓库里带了一个单文件同步脚本 `ProbablyAug-Sync.ps1`，两台电脑用同一份。

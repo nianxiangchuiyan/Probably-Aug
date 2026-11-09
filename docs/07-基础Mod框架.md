@@ -62,6 +62,8 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -GameDir "D:\SteamLibrary\s
 
 输出：仓库根目录 `ProbablyAug.dll`（`netstandard2.1`，引用 `Assembly-CSharp` 与 Unity 模块；不复制到游戏目录，仓库本身通过 `Mods\Probably-Aug` junction 被游戏读取）。
 
+> **不要**把 `src/obj`、`src/bin` 留在 Mod 文件夹里：游戏的 `ModLoader` 会检查“文件夹内存在但 manifest 没列的 DLL”，并直接拒绝启用。`build.ps1` 已把中间产物放到系统临时目录 `%TEMP%\ProbablyAugBuild`，仓库只保留根目录 DLL。
+
 ---
 
 ## 4. 启用与测试
